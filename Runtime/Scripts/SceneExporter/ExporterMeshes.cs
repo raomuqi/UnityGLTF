@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -15,9 +15,40 @@ namespace UnityGLTF
 {
 	public partial class GLTFSceneExporter
 	{
+		// Unity 支持最多 8 个 UV 通道 (TexCoord0 ~ TexCoord7)，glTF 规范对 TEXCOORD_n 没有数量上限。
+		private const int MaxUVChannels = 8;
+
+		// UV 通道对应的 VertexAttribute 枚举（顺序严格对应 0~7）
+		private static readonly VertexAttribute[] UVAttributes =
+		{
+			VertexAttribute.TexCoord0,
+			VertexAttribute.TexCoord1,
+			VertexAttribute.TexCoord2,
+			VertexAttribute.TexCoord3,
+			VertexAttribute.TexCoord4,
+			VertexAttribute.TexCoord5,
+			VertexAttribute.TexCoord6,
+			VertexAttribute.TexCoord7,
+		};
+
+		// UV 通道对应的 glTF semantic 名称（顺序严格对应 0~7）
+		private static readonly string[] UVSemantics =
+		{
+			SemanticProperties.TEXCOORD_0,
+			SemanticProperties.TEXCOORD_1,
+			SemanticProperties.TEXCOORD_2,
+			SemanticProperties.TEXCOORD_3,
+			"TEXCOORD_4",
+			"TEXCOORD_5",
+			"TEXCOORD_6",
+			"TEXCOORD_7",
+		};
+
 		private struct MeshAccessors
 		{
-			public AccessorId aPosition, aNormal, aTangent, aTexcoord0, aTexcoord1, aTexcoord2, aColor0, aJoints0, aWeights0;
+			public AccessorId aPosition, aNormal, aTangent, aColor0, aJoints0, aWeights0;
+			// 统一用数组承载所有 UV 通道的 Accessor，彻底解除 UV 数量硬编码限制
+			public AccessorId[] aTexcoords;
 			public Dictionary<int, MeshPrimitive> subMeshPrimitives;
 		}
 
@@ -255,7 +286,8 @@ namespace UnityGLTF
 
 			if (!_meshToPrims.ContainsKey(meshObj))
 			{
-				AccessorId aPosition = null, aNormal = null, aTangent = null, aTexcoord0 = null, aTexcoord1 = null, aTexcoord2 = null, aColor0 = null;
+				AccessorId aPosition = null, aNormal = null, aTangent = null, aColor0 = null;
+				var aTexcoords = new AccessorId[MaxUVChannels];
 
 				aPosition = ExportAccessor(SchemaExtensions.ConvertVector3CoordinateSpaceAndCopy(meshObj.vertices, SchemaExtensions.CoordinateSpaceConversionScale));
 
@@ -265,47 +297,10 @@ namespace UnityGLTF
 				if (meshObj.HasVertexAttribute(VertexAttribute.Tangent))
 					aTangent = ExportAccessor(SchemaExtensions.ConvertTangentCoordinateSpaceAndCopy(meshObj.tangents, SchemaExtensions.TangentSpaceConversionScale));
 
-				if (meshObj.HasVertexAttribute(VertexAttribute.TexCoord0))
+				// 统一循环处理所有 UV 通道（0~7），解除 UV 数量硬编码限制
+				for (int uvChannel = 0; uvChannel < MaxUVChannels; uvChannel++)
 				{
-					var uvDim = meshObj.GetVertexAttributeDimension(VertexAttribute.TexCoord0);
-					if (uvDim != 2) Debug.LogWarning(null, "UV0 must be Vector2 in glTF, but it has " + uvDim + " channels. Only xy will be exported. Mesh: " + meshObj.name);
-					var uv= meshObj.uv;
-					if (uv.Length != 0)
-						aTexcoord0 = ExportAccessor(SchemaExtensions.FlipTexCoordArrayVAndCopy(uv));
-				}
-				
-				if (meshObj.HasVertexAttribute(VertexAttribute.TexCoord1))
-				{
-					var uvDim1 = meshObj.GetVertexAttributeDimension(VertexAttribute.TexCoord1);
-					if (uvDim1 != 2)
-						Debug.LogWarning(null, "UV1 must be Vector2 in glTF, but it has " + uvDim1 + " channels. Only xy will be exported. Mesh: " + meshObj.name);
-					var uv2 = meshObj.uv2;
-					if (uv2.Length != 0)
-						aTexcoord1 = ExportAccessor(SchemaExtensions.FlipTexCoordArrayVAndCopy(uv2));
-				}
-
-				// From UV2, we're exporting as custom attribute
-				if (meshObj.HasVertexAttribute(VertexAttribute.TexCoord2))
-				{
-					var uvDim2 = meshObj.GetVertexAttributeDimension(VertexAttribute.TexCoord2);
-					if (uvDim2 == 2)
-					{
-						var uvs = new List<Vector2>(meshObj.vertexCount);
-						meshObj.GetUVs(2, uvs);
-						aTexcoord2 = ExportAccessor(uvs.ToArray());
-					}
-					else if (uvDim2 == 3)
-					{
-						var uvs = new List<Vector3>(meshObj.vertexCount);
-						meshObj.GetUVs(2, uvs);
-						aTexcoord2 = ExportAccessor(uvs.ToArray());
-					}
-					else if (uvDim2 == 4)
-					{
-						var uvs = new List<Vector4>(meshObj.vertexCount);
-						meshObj.GetUVs(2, uvs);
-						aTexcoord2 = ExportAccessor(uvs.ToArray());
-					}
+					aTexcoords[uvChannel] = ExportUVChannel(meshObj, uvChannel);
 				}
 
 				if (settings.ExportVertexColors && meshObj.colors.Length != 0)
@@ -314,9 +309,11 @@ namespace UnityGLTF
 				aPosition.Value.BufferView.Value.Target = BufferViewTarget.ArrayBuffer;
 				if (aNormal != null) aNormal.Value.BufferView.Value.Target = BufferViewTarget.ArrayBuffer;
 				if (aTangent != null) aTangent.Value.BufferView.Value.Target = BufferViewTarget.ArrayBuffer;
-				if (aTexcoord0 != null) aTexcoord0.Value.BufferView.Value.Target = BufferViewTarget.ArrayBuffer;
-				if (aTexcoord1 != null) aTexcoord1.Value.BufferView.Value.Target = BufferViewTarget.ArrayBuffer;
-				if (aTexcoord2 != null) aTexcoord2.Value.BufferView.Value.Target = BufferViewTarget.ArrayBuffer;
+				for (int uvChannel = 0; uvChannel < MaxUVChannels; uvChannel++)
+				{
+					if (aTexcoords[uvChannel] != null)
+						aTexcoords[uvChannel].Value.BufferView.Value.Target = BufferViewTarget.ArrayBuffer;
+				}
 				if (aColor0 != null) aColor0.Value.BufferView.Value.Target = BufferViewTarget.ArrayBuffer;
 
 				_meshToPrims.Add(meshObj, new MeshAccessors()
@@ -324,9 +321,7 @@ namespace UnityGLTF
 					aPosition = aPosition,
 					aNormal = aNormal,
 					aTangent = aTangent,
-					aTexcoord0 = aTexcoord0,
-					aTexcoord1 = aTexcoord1,
-					aTexcoord2 = aTexcoord2,
+					aTexcoords = aTexcoords,
 					aColor0 = aColor0,
 					subMeshPrimitives = new Dictionary<int, MeshPrimitive>()
 				});
@@ -362,12 +357,14 @@ namespace UnityGLTF
 						primitive.Attributes.Add(SemanticProperties.NORMAL, accessors.aNormal);
 					if (accessors.aTangent != null)
 						primitive.Attributes.Add(SemanticProperties.TANGENT, accessors.aTangent);
-					if (accessors.aTexcoord0 != null)
-						primitive.Attributes.Add(SemanticProperties.TEXCOORD_0, accessors.aTexcoord0);
-					if (accessors.aTexcoord1 != null)
-						primitive.Attributes.Add(SemanticProperties.TEXCOORD_1, accessors.aTexcoord1);
-					if (accessors.aTexcoord2 != null)
-						primitive.Attributes.Add(SemanticProperties.TEXCOORD_2, accessors.aTexcoord2);
+					if (accessors.aTexcoords != null)
+					{
+						for (int uvChannel = 0; uvChannel < accessors.aTexcoords.Length; uvChannel++)
+						{
+							if (accessors.aTexcoords[uvChannel] != null)
+								primitive.Attributes.Add(UVSemantics[uvChannel], accessors.aTexcoords[uvChannel]);
+						}
+					}
 					if (accessors.aColor0 != null)
 						primitive.Attributes.Add(SemanticProperties.COLOR_0, accessors.aColor0);
 
@@ -563,6 +560,56 @@ namespace UnityGLTF
 				return true;
 			}
 			return false;
+		}
+
+		/// <summary>
+		/// 导出单个 UV 通道为 AccessorId。
+		/// UV0/UV1 保持原行为做 V 翻转（作为贴图 UV 使用）；UV2~UV7 作为自定义顶点属性直接导出，不翻转 V。
+		/// 返回 null 表示该通道不存在或为空。
+		/// </summary>
+		private AccessorId ExportUVChannel(Mesh meshObj, int uvChannel)
+		{
+			if (uvChannel < 0 || uvChannel >= MaxUVChannels) return null;
+
+			var attr = UVAttributes[uvChannel];
+			if (!meshObj.HasVertexAttribute(attr)) return null;
+
+			var dim = meshObj.GetVertexAttributeDimension(attr);
+
+			// UV0/UV1：作为贴图 UV 使用，V 轴翻转以匹配 glTF 坐标约定
+			if (uvChannel <= 1)
+			{
+				if (dim != 2)
+					Debug.LogWarning(null, $"UV{uvChannel} must be Vector2 in glTF, but it has {dim} channels. Only xy will be exported. Mesh: {meshObj.name}");
+				var uvs = new List<Vector2>(meshObj.vertexCount);
+				meshObj.GetUVs(uvChannel, uvs);
+				if (uvs.Count == 0) return null;
+				return ExportAccessor(SchemaExtensions.FlipTexCoordArrayVAndCopy(uvs.ToArray()));
+			}
+
+			// UV2~UV7：作为自定义顶点属性导出（glTF 规范允许任意 TEXCOORD_n），不翻转 V，保留原始维度
+			if (dim == 2)
+			{
+				var uvs = new List<Vector2>(meshObj.vertexCount);
+				meshObj.GetUVs(uvChannel, uvs);
+				if (uvs.Count == 0) return null;
+				return ExportAccessor(uvs.ToArray());
+			}
+			else if (dim == 3)
+			{
+				var uvs = new List<Vector3>(meshObj.vertexCount);
+				meshObj.GetUVs(uvChannel, uvs);
+				if (uvs.Count == 0) return null;
+				return ExportAccessor(uvs.ToArray());
+			}
+			else if (dim == 4)
+			{
+				var uvs = new List<Vector4>(meshObj.vertexCount);
+				meshObj.GetUVs(uvChannel, uvs);
+				if (uvs.Count == 0) return null;
+				return ExportAccessor(uvs.ToArray());
+			}
+			return null;
 		}
 
 		private static DrawMode GetDrawMode(MeshTopology topology)
