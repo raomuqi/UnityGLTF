@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 using System.IO;
@@ -177,6 +177,24 @@ namespace UnityGLTF
 	    [Tooltip("If off, vertex colors are not exported. Vertex Colors aren't supported in some viewers (e.g. Google's SceneViewer).")]
 		private bool exportVertexColors = true;
 
+		// ---------------------------------------------------------------------
+		// UV1 V 翻转开关
+		// ---------------------------------------------------------------------
+		// glTF 规范要求贴图 UV 原点在左下（V 朝下），Unity 使用左上（V 朝上），
+		// 因此 UV0 导出时必须执行 V = 1 - V。UV1 在 Unity 里有两种常见用途：
+		//   (A) lightmap / 第二套贴图 UV（传统用法）  → 需要 V 翻转
+		//   (B) Houdini / 程序化管线烘进来的自定义数据（位置、向量、mask 等）
+		//        → 禁止翻转，翻转会把数值破坏
+		// 默认值取 false，优先保证数据通道不被破坏。如果你的网格 UV1 是 lightmap
+		// 贴图 UV，请在导出前将此开关打开（或通过代码 settings.FlipTexCoord1V = true）。
+		// UV2~UV7 始终作为自定义顶点属性透传，不受本开关影响。
+		// ---------------------------------------------------------------------
+		[SerializeField]
+		[Tooltip("勾选：UV1 视为贴图 UV，导出时做 V 翻转（lightmap 等场景需要）。\n" +
+		         "不勾选（默认）：UV1 视为自定义数据通道原样导出（Houdini 烘进来的 Pivot/方向等场景需要）。\n" +
+		         "UV0 始终翻转，UV2~UV7 始终不翻转。")]
+		private bool flipTexCoord1V = false;
+
 		[Header("Export Cache")]
 		[Tooltip("When enabled textures will be cached to disc for faster export times.\n(The cache size is reduced to stay below 1024 MB when the Editor quits)")]
 		public bool UseCaching = true;
@@ -187,6 +205,7 @@ namespace UnityGLTF
 		public bool TryExportTexturesFromDisk { get => tryExportTexturesFromDisk; set => tryExportTexturesFromDisk = value; }
 		public bool UseTextureFileTypeHeuristic { get => useTextureFileTypeHeuristic; set => useTextureFileTypeHeuristic = value; }
 		public bool ExportVertexColors { get => exportVertexColors; set => exportVertexColors = value; }
+		public bool FlipTexCoord1V { get => flipTexCoord1V; set => flipTexCoord1V = value; }
 		public int DefaultJpegQuality { get => defaultJpegQuality; set => defaultJpegQuality = value; }
 		public bool ExportDisabledGameObjects { get => exportDisabledGameObjects; set => exportDisabledGameObjects = value; }
 		public bool ExportAnimations { get => exportAnimations; set => exportAnimations = value; }
