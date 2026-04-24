@@ -564,7 +564,19 @@ namespace UnityGLTF
 
 		/// <summary>
 		/// 导出单个 UV 通道为 AccessorId。
-		/// UV0/UV1 保持原行为做 V 翻转（作为贴图 UV 使用）；UV2~UV7 作为自定义顶点属性直接导出，不翻转 V。
+		///
+		/// ▼▼▼ V 翻转策略（UV 原点从 Unity 左上 → glTF 左下）▼▼▼
+		///   UV0           : 始终翻转 V（glTF 规范对基础贴图 UV 的硬约定）。
+		///   UV1           : 由 <see cref="GLTFSettings.FlipTexCoord1V"/> 控制。
+		///                   - 默认 false（不翻）：适用于 Houdini/程序化管线把位置、方向、mask
+		///                     等数据烘进 UV1 的场景（翻转会把数值破坏）。
+		///                   - 设为 true（翻转）：适用于 UV1 被当作 lightmap UV 或第二套贴图 UV
+		///                     的传统场景。
+		///                   ⚠ 未来如果项目里 UV1 重新给 lightmap 使用，请务必：
+		///                     1) 在 GLTFSettings 里把 FlipTexCoord1V 勾上；
+		///                     2) 确保目标网格的 UV1 只用来做贴图采样，不要再混入数据。
+		///   UV2 ~ UV7     : 始终不翻转，作为任意维度的自定义顶点属性原样透传
+		///                   （glTF 规范允许 TEXCOORD_n 有任意数量的分量：vec2/vec3/vec4）。
 		/// 返回 null 表示该通道不存在或为空。
 		/// </summary>
 		private AccessorId ExportUVChannel(Mesh meshObj, int uvChannel)
@@ -576,18 +588,38 @@ namespace UnityGLTF
 
 			var dim = meshObj.GetVertexAttributeDimension(attr);
 
-			// UV0/UV1：作为贴图 UV 使用，V 轴翻转以匹配 glTF 坐标约定
-			if (uvChannel <= 1)
+			// 判定该通道是否需要 V 翻转
+			bool flipV;
+			if (uvChannel == 0)
+			{
+				flipV = true; // UV0：glTF 规范强制
+			}
+			else if (uvChannel == 1)
+			{
+				// UV1：按开关决定。默认 false（即不翻转，保证数据通道）。
+				flipV = settings != null && settings.FlipTexCoord1V;
+			}
+			else
+			{
+				flipV = false; // UV2~UV7：自定义数据通道，始终不翻
+			}
+
+			// 翻转路径只对 Vector2 有意义（V 翻转本质是对 y 做 1-y）
+			if (flipV)
 			{
 				if (dim != 2)
-					Debug.LogWarning(null, $"UV{uvChannel} must be Vector2 in glTF, but it has {dim} channels. Only xy will be exported. Mesh: {meshObj.name}");
+				{
+					Debug.LogWarning(null,
+						$"UV{uvChannel} 被标记为需要 V 翻转（贴图 UV 语义），但维度为 {dim}。" +
+						$"glTF 贴图 UV 只支持 Vector2，将仅导出 xy 并执行 V 翻转。Mesh: {meshObj.name}");
+				}
 				var uvs = new List<Vector2>(meshObj.vertexCount);
 				meshObj.GetUVs(uvChannel, uvs);
 				if (uvs.Count == 0) return null;
 				return ExportAccessor(SchemaExtensions.FlipTexCoordArrayVAndCopy(uvs.ToArray()));
 			}
 
-			// UV2~UV7：作为自定义顶点属性导出（glTF 规范允许任意 TEXCOORD_n），不翻转 V，保留原始维度
+			// 不翻转路径：按实际维度原样导出（支持 vec2/vec3/vec4）
 			if (dim == 2)
 			{
 				var uvs = new List<Vector2>(meshObj.vertexCount);
